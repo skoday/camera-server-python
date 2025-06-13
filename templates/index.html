@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream de Cámara en Vivo</title>
+    <script src="https://cdn.socket.io/4.3.2/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        #videoFrame {
+            width: 672px;
+            height: 672px;
+            border: 2px solid #333;
+            border-radius: 10px;
+            background: #000;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 0 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover { background: #0056b3; }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            background: #333;
+            border-radius: 5px;
+        }
+        .viewer-count {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 Stream de Cámara en Vivo</h1>
+        
+        <div class="controls">
+            <button id="startBtn">Iniciar Stream</button>
+            <button id="stopBtn">Detener Stream</button>
+        </div>
+        
+        <div style="position: relative;">
+            <img id="videoFrame" src="" alt="Stream de video en vivo">
+            <div class="viewer-count">
+                <span id="viewerCount">Conectando...</span>
+            </div>
+        </div>
+        
+        <div id="status">Esperando conexión...</div>
+    </div>
+
+    <script>
+        const socket = io();
+        const videoFrame = document.getElementById('videoFrame');
+        const statusDiv = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const viewerCount = document.getElementById('viewerCount');
+
+        socket.on('connect', () => {
+            statusDiv.textContent = 'Conectado al servidor';
+            viewerCount.textContent = 'Conectado';
+        });
+
+        socket.on('video_frame', (data) => {
+            videoFrame.src = 'data:image/jpeg;base64,' + data.image;
+        });
+
+        socket.on('status', (data) => {
+            statusDiv.textContent = data.message;
+        });
+
+        socket.on('disconnect', () => {
+            statusDiv.textContent = 'Desconectado del servidor';
+            viewerCount.textContent = 'Desconectado';
+        });
+
+        startBtn.addEventListener('click', () => {
+            socket.emit('start_stream');
+        });
+
+        stopBtn.addEventListener('click', () => {
+            socket.emit('stop_stream');
+        });
+    </script>
+</body>
+</html>
