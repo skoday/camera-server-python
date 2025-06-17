@@ -3,102 +3,156 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stream de Cámara en Vivo</title>
+    <title>🎥 Camera LLaVA Server Interface</title>
     <script src="https://cdn.socket.io/4.3.2/socket.io.min.js"></script>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #1a1a1a;
-            color: white;
-            margin: 0;
-            padding: 20px;
-            text-align: center;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        #videoFrame {
-            width: 672px;
-            height: 672px;
-            border: 2px solid #333;
-            border-radius: 10px;
-            background: #000;
-        }
-        .controls {
-            margin: 20px 0;
-        }
-        button {
-            padding: 10px 20px;
-            margin: 0 10px;
-            background: #007bff;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        button:hover { background: #0056b3; }
-        #status {
-            margin-top: 20px;
-            padding: 10px;
-            background: #333;
-            border-radius: 5px;
-        }
-        .viewer-count {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            background: rgba(0,0,0,0.7);
-            padding: 10px;
-            border-radius: 5px;
-        }
-    </style>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
+
 <body>
     <div class="container">
-        <h1>🎥 Stream de Cámara en Vivo</h1>
-        
-        <div class="controls">
-            <button id="startBtn">Iniciar Stream</button>
-            <button id="stopBtn">Detener Stream</button>
-        </div>
-        
-        <div style="position: relative;">
-            <img id="videoFrame" src="" alt="Stream de video en vivo">
-            <div class="viewer-count">
-                <span id="viewerCount">Conectando...</span>
+        <div class="header">
+            <h1>🎥 Camera LLaVA Server Interface</h1>
+            <div class="server-info">
+                <div>Clientes conectados: <span id="clientCount">0</span></div>
+                <div id="connectionStatus" class="status-disconnected">Desconectado</div>
             </div>
         </div>
-        
-        <div id="status">Esperando conexión...</div>
+
+        <div class="main-layout">
+            <!-- Sección de cámara -->
+            <div class="camera-section">
+                <h2>📹 Cámara del Servidor (USB)</h2>
+                <div class="controls">
+                    <div class="buttons">
+                        <button id="startBtn" class="btn btn-primary">Enviar imágenes</button>
+                        <button id="stopBtn" class="btn btn-secondary">Parar imágenes</button>
+                    </div>
+                </div>
+
+                <div class="camera-container">
+                    <img id="serverCamera" src="" alt="Stream de cámara del servidor">
+                    <div class="camera-placeholder" id="cameraPlaceholder">
+                        <div class="placeholder-content">
+                            <p>📷</p>
+                            <p>Esperando imagen de la cámara del servidor...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="streamStatus" class="status paused">⏸️ Captura automática pausada</div>
+
+                <div class="auto-capture-controls">
+                    <label for="autoInterval">Segundos:</label>
+                    <input type="number" id="autoInterval" min="1" max="60" value="3" class="seconds-input">
+                    <button id="startAutoBtn" class="btn btn-primary">Iniciar Auto-Captura</button>
+                    <button id="stopAutoBtn" class="btn btn-secondary" disabled>Parar Auto-Captura</button>
+                </div>
+            </div>
+
+            <!-- Sección de prompt -->
+            <div class="prompt-section">
+                <h2>💬 Input de texto para el prompt</h2>
+                <textarea id="prompt" rows="3" placeholder="What is in this picture?">What is in this picture?</textarea>
+                
+                <button id="captureBtn" class="btn btn-primary">Capturar y Analizar</button>
+                
+                <h2>🤖 Respuesta del LLM</h2>
+                <textarea id="response" readonly placeholder="Aquí aparecerá la respuesta del LLM..."></textarea>
+            </div>
+        </div>
+
+        <!-- Sección de respuestas -->
+        <div class="responses-section">
+            <h2>📊 TABLA CON RESPUESTAS PASADAS</h2>
+            <div class="table-container">
+                <table id="responsesTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Timestamp</th>
+                            <th>Prompt</th>
+                            <th>Response</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
+            </div>
+            <button id="clearHistoryBtn" class="btn btn-secondary">Limpiar historial</button>
+        </div>
     </div>
 
     <script>
         const socket = io();
-        const videoFrame = document.getElementById('videoFrame');
-        const statusDiv = document.getElementById('status');
+        const serverCamera = document.getElementById('serverCamera');
+        const cameraPlaceholder = document.getElementById('cameraPlaceholder');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const clientCount = document.getElementById('clientCount');
+        const streamStatus = document.getElementById('streamStatus');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
-        const viewerCount = document.getElementById('viewerCount');
+        const captureBtn = document.getElementById('captureBtn');
+        const prompt = document.getElementById('prompt');
+        const response = document.getElementById('response');
+        const responsesTableBody = document.querySelector('#responsesTable tbody');
+        const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+        const startAutoBtn = document.getElementById('startAutoBtn');
+        const stopAutoBtn = document.getElementById('stopAutoBtn');
+        const autoInterval = document.getElementById('autoInterval');
 
+        let autoCapture = null;
+
+        // Eventos de Socket.IO
         socket.on('connect', () => {
-            statusDiv.textContent = 'Conectado al servidor';
-            viewerCount.textContent = 'Conectado';
-        });
-
-        socket.on('video_frame', (data) => {
-            videoFrame.src = 'data:image/jpeg;base64,' + data.image;
-        });
-
-        socket.on('status', (data) => {
-            statusDiv.textContent = data.message;
+            connectionStatus.textContent = 'Conectado';
+            connectionStatus.className = 'status-connected';
+            socket.emit('start_stream');
         });
 
         socket.on('disconnect', () => {
-            statusDiv.textContent = 'Desconectado del servidor';
-            viewerCount.textContent = 'Desconectado';
+            connectionStatus.textContent = 'Desconectado';
+            connectionStatus.className = 'status-disconnected';
         });
 
+        socket.on('video_frame', (data) => {
+            serverCamera.src = 'data:image/jpeg;base64,' + data.image;
+            serverCamera.style.display = 'block';
+            cameraPlaceholder.style.display = 'none';
+        });
+
+        socket.on('client_count', (data) => {
+            clientCount.textContent = data.count;
+        });
+
+        socket.on('stream_status', (data) => {
+            if (data.status === 'running') {
+                streamStatus.textContent = '▶️ Stream activo';
+                streamStatus.className = 'status running';
+            } else {
+                streamStatus.textContent = '⏸️ Stream pausado';
+                streamStatus.className = 'status paused';
+            }
+        });
+
+        socket.on('new_response', (data) => {
+            addResponseToTable(data);
+            response.value = data.response;
+        });
+
+        socket.on('responses_history', (data) => {
+            data.history.forEach(response => addResponseToTable(response));
+        });
+
+        socket.on('history_cleared', () => {
+            responsesTableBody.innerHTML = '';
+            response.value = '';
+        });
+
+        socket.on('analysis_error', (data) => {
+            response.value = 'Error: ' + data.error;
+        });
+
+        // Event listeners
         startBtn.addEventListener('click', () => {
             socket.emit('start_stream');
         });
@@ -106,6 +160,96 @@
         stopBtn.addEventListener('click', () => {
             socket.emit('stop_stream');
         });
+
+        captureBtn.addEventListener('click', () => {
+            const promptText = prompt.value.trim() || 'What is in this picture?';
+            socket.emit('capture_and_analyze', { prompt: promptText });
+        });
+
+        clearHistoryBtn.addEventListener('click', () => {
+            socket.emit('clear_history');
+        });
+
+        startAutoBtn.addEventListener('click', () => {
+            const interval = parseInt(autoInterval.value) * 1000;
+            autoCapture = setInterval(() => {
+                const promptText = prompt.value.trim() || 'What is in this picture?';
+                socket.emit('capture_and_analyze', { prompt: promptText });
+            }, interval);
+            
+            startAutoBtn.disabled = true;
+            stopAutoBtn.disabled = false;
+            autoInterval.disabled = true;
+        });
+
+        stopAutoBtn.addEventListener('click', () => {
+            if (autoCapture) {
+                clearInterval(autoCapture);
+                autoCapture = null;
+            }
+            
+            startAutoBtn.disabled = false;
+            stopAutoBtn.disabled = true;
+            autoInterval.disabled = false;
+        });
+
+        function addResponseToTable(data) {
+            const row = responsesTableBody.insertRow(0);
+            row.innerHTML = `
+                <td>${data.id}</td>
+                <td>${data.timestamp}</td>
+                <td>${data.prompt}</td>
+                <td>${data.response}</td>
+            `;
+        }
+        socket.on('auto_capture_started', (data) => {
+            startAutoBtn.disabled = true;
+            stopAutoBtn.disabled = false;
+            autoInterval.disabled = true;
+            streamStatus.textContent = `🤖 Auto-captura activa (cada ${data.interval}s)`;
+            streamStatus.className = 'status running';
+        });
+
+        socket.on('auto_capture_stopped', () => {
+            startAutoBtn.disabled = false;
+            stopAutoBtn.disabled = true;
+            autoInterval.disabled = false;
+            streamStatus.textContent = '⏸️ Auto-captura detenida';
+            streamStatus.className = 'status paused';
+        });
+
+        socket.on('auto_capture_state', (data) => {
+            if (data.is_running) {
+                startAutoBtn.disabled = true;
+                stopAutoBtn.disabled = false;
+                autoInterval.disabled = true;
+                streamStatus.textContent = `🤖 Auto-captura activa (cada ${data.interval}s)`;
+                streamStatus.className = 'status running';
+            }
+        });
+
+        socket.on('auto_capture_status', (data) => {
+            console.log('📊 Auto-captura:', data.status);
+        });
+
+        socket.on('auto_capture_error', (data) => {
+            console.error('❌ Error auto-captura:', data.error);
+        });
+
+        // Actualizar los event listeners existentes
+        startAutoBtn.addEventListener('click', () => {
+            const interval = parseInt(autoInterval.value);
+            const promptText = prompt.value.trim() || 'What is in this picture?';
+            socket.emit('start_auto_capture', { 
+                interval: interval, 
+                prompt: promptText 
+            });
+        });
+
+        stopAutoBtn.addEventListener('click', () => {
+            socket.emit('stop_auto_capture');
+        });
+
     </script>
 </body>
 </html>
