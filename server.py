@@ -11,6 +11,15 @@ from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 import random
 import threading
+import requests
+import json
+import threading
+from datetime import datetime
+
+# Variables globales para control de estado
+auto_capture_timer = None
+auto_capture_lock = threading.Lock()  # Para thread safety
+
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret-key-for-socketio'
@@ -64,60 +73,151 @@ def capture_and_stream():
         
         eventlet.sleep(0.03)  # ~30 FPS
 
+import threading
+from datetime import datetime, timedelta
+
+# Variable global para el timer
+auto_capture_timer = None
+
 def auto_capture_task():
-    global is_auto_capturing, video_capture, responses_history, auto_capture_interval, auto_capture_prompt
+    """Inicializar sistema de autocaptura con scheduler preciso"""
+    global is_auto_capturing, auto_capture_timer
     
-    print("🤖 Iniciando autocaptura con auto-corrección de drift...")
+    print("🤖 Iniciando autocaptura con scheduler preciso...")
     
-    start_time = time.time()
-    capture_count = 0
-    
-    while is_auto_capturing:
-        current_time = time.time()
-        
-        # Calcular cuándo debería ocurrir la próxima captura
-        expected_capture_time = start_time + (capture_count * auto_capture_interval)
-        
-        if current_time >= expected_capture_time:
-            capture_count += 1
-            
-            # Detectar drift significativo y corregir
-            drift = current_time - expected_capture_time
-            if drift > 0.5:  # Si hay más de 500ms de drift
-                print(f"⚠️ Drift detectado: {drift:.2f}s - Corrigiendo...")
-                start_time = current_time - (capture_count * auto_capture_interval)
-            
-            # Tu código de captura aquí...
-            try:
-                # [Mismo código de captura que arriba]
-                print(f"📸 Captura #{capture_count} - Drift actual: {drift:.3f}s")
-                
-            except Exception as e:
-                print(f"❌ Error: {e}")
-        
-        eventlet.sleep(0.05)
+    if is_auto_capturing:
+        schedule_next_capture()
 
+def schedule_next_capture():
+    """Programar la próxima captura de forma precisa"""
+    global auto_capture_timer, is_auto_capturing, auto_capture_interval
+    
+    if not is_auto_capturing:
+        return
+    
+    # Cancelar timer anterior si existe
+    if auto_capture_timer is not None:
+        auto_capture_timer.cancel()
+    
+    # Programar próxima captura exactamente en N segundos
+    auto_capture_timer = threading.Timer(auto_capture_interval, execute_capture)
+    auto_capture_timer.start()
+    
+    print(f"⏰ Próxima captura programada en {auto_capture_interval} segundos exactos")
 
-def llm_stub(image_base64, prompt, model="llava:7b"):
-    """Stub del LLM con respuestas más realistas"""
-    eventlet.sleep(random.uniform(0.5, 2))  # Simular tiempo de procesamiento
+def execute_capture():
+    """Ejecutar una sola captura y programar la siguiente"""
+    global video_capture, responses_history, auto_capture_prompt, is_auto_capturing
     
-    responses = [
-        f"I can see various objects and activity in this image. The scene appears to be captured from a camera perspective showing an indoor environment.",
-        f"The image shows what appears to be a workspace or living area with multiple items visible in the frame.",
-        f"I observe a scene with furniture and personal belongings, suggesting this is a residential or office setting.",
-        f"This appears to be a real-time camera feed showing movement and objects in what looks like an indoor space.",
-        f"The captured image contains various elements including what might be electronics, furniture, and other household items."
-    ]
+    if not is_auto_capturing:
+        return
     
-    base_response = random.choice(responses)
-    timestamp_info = f" [Analyzed at {datetime.now().strftime('%H:%M:%S')} by {model} stub]"
+    # IMPORTANTE: Programar la siguiente ANTES de procesar
+    schedule_next_capture()
     
-    return base_response + timestamp_info
+    if video_capture is None or not video_capture.isOpened():
+        print("⚠️ Cámara no disponible para autocaptura")
+        return
+    
+    try:
+        ret, frame = video_capture.read()
+        if not ret:
+            print("⚠️ Error capturando frame")
+            return
+        
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"📸 Ejecutando captura automática: {timestamp}")
+        
+        # Guardar imagen localmente
+        filename = f'captures/auto_capture_{int(time.time())}.jpg'
+        os.makedirs('captures', exist_ok=True)
+        cv2.imwrite(filename, frame)
+        
+        # Convertir a base64
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # Llamada al API (sin afectar el timing)
+        analysis_text = send_to_llm(frame_base64, auto_capture_prompt, "llava:7b")
+        
+        # Agregar al historial
+        responses_history.append({
+            'id': len(responses_history) + 1,
+            'timestamp': timestamp,
+            'prompt': auto_capture_prompt,
+            'response': analysis_text,
+            'image_base64': frame_base64,
+            'auto_capture': True
+        })
+        
+        # Emitir a clientes conectados
+        socketio.emit('new_response', responses_history[-1])
+        
+        print(f"✅ Captura #{len(responses_history)} completada y programada siguiente")
+        
+    except Exception as e:
+        print(f"❌ Error en captura automática: {e}")
+
 
 def send_to_llm(image_base64, prompt, model="llava:7b"):
-    """Enviar imagen al LLM"""
-    return llm_stub(image_base64, prompt, model)
+    """Enviar imagen al API real de LLaVA"""
+    
+    # Preparar payload según especificación
+    payload = {
+        "file": f"auto_capture_{int(time.time())}.jpg",
+        "model": model,
+        "prompt": prompt,
+        "images": [image_base64]
+    }
+    
+    try:
+        print(f"🔄 Enviando al API LLaVA: {prompt[:50]}...")
+        
+        response = requests.post(
+            "http://10.3.56.6:8000/llava",
+            json=payload,
+            timeout=30,  # 30 segundos timeout
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        # Verificar status HTTP
+        response.raise_for_status()
+        
+        # Parsear respuesta JSON
+        data = response.json()
+        
+        if "response" not in data:
+            print("⚠️ API respondió sin campo 'response'")
+            return "Error: API response format invalid"
+        
+        print(f"✅ API respondió exitosamente")
+        return data["response"]
+        
+    except requests.exceptions.Timeout:
+        error_msg = "⏰ API request timeout (30s)"
+        print(error_msg)
+        return f"Error: {error_msg}"
+        
+    except requests.exceptions.ConnectionError:
+        error_msg = "🔌 No se pudo conectar al API LLaVA"
+        print(error_msg)
+        return f"Error: {error_msg}"
+        
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"📡 API HTTP Error: {e.response.status_code}"
+        print(error_msg)
+        return f"Error: {error_msg}"
+        
+    except requests.exceptions.JSONDecodeError:
+        error_msg = "📄 API response is not valid JSON"
+        print(error_msg)
+        return f"Error: {error_msg}"
+        
+    except Exception as e:
+        error_msg = f"❌ Unexpected error: {str(e)}"
+        print(error_msg)
+        return f"Error: {error_msg}"
+
 
 @app.route('/')
 def index():
@@ -173,43 +273,43 @@ def handle_stop_stream():
     emit('stream_status', {'status': 'stopped'}, broadcast=True)
     print("📹 Stream de video detenido")
 
-
 @socketio.on('start_auto_capture')
 def handle_start_auto_capture(data):
     global is_auto_capturing, auto_capture_interval, auto_capture_prompt
     
-    if not is_auto_capturing:
-        # Configurar parámetros
-        auto_capture_interval = data.get('interval', 3)
-        auto_capture_prompt = data.get('prompt', 'What is in this picture?')
-        
-        # Asegurar que la cámara esté inicializada
-        if not initialize_camera():
-            emit('server_message', {'message': 'Error: No se pudo inicializar la cámara para autocaptura'})
-            return
-        
-        is_auto_capturing = True
-        
-        # Iniciar tarea de autocaptura independiente
-        socketio.start_background_task(auto_capture_task)
-        
-        emit('auto_capture_started', {
-            'interval': auto_capture_interval,
-            'prompt': auto_capture_prompt
-        }, broadcast=True)
-        
-        print(f"🤖 Autocaptura iniciada: cada {auto_capture_interval}s con prompt: '{auto_capture_prompt}'")
+    is_auto_capturing = True
+    auto_capture_interval = data.get('interval', 3)
+    auto_capture_prompt = data.get('prompt', 'What is in this picture?')
+    
+    print(f"🚀 Iniciando autocaptura cada {auto_capture_interval} segundos")
+    
+    # Usar threading en lugar de eventlet para esta tarea
+    threading.Thread(target=auto_capture_task, daemon=True).start()
+    
+    emit('auto_capture_started', {
+        'interval': auto_capture_interval,
+        'prompt': auto_capture_prompt
+    }, broadcast=True)
+
 
 @socketio.on('stop_auto_capture')
 def handle_stop_auto_capture():
-    global is_auto_capturing
+    global is_auto_capturing, auto_capture_timer
+    
     is_auto_capturing = False
+    
+    # Cancelar timer pendiente
+    if auto_capture_timer is not None:
+        auto_capture_timer.cancel()
+        auto_capture_timer = None
+    
     emit('auto_capture_stopped', broadcast=True)
-    print("🤖 Autocaptura detenida por usuario")
+    print("🛑 Autocaptura detenida - Timer cancelado")
+
 
 @socketio.on('capture_and_analyze')
 def handle_capture_and_analyze(data):
-    """Captura manual individual"""
+    """Captura manual individual con API real"""
     global video_capture
     
     if video_capture is None or not video_capture.isOpened():
@@ -225,21 +325,27 @@ def handle_capture_and_analyze(data):
             
             timestamp = datetime.now()
             timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            
+            # Guardar imagen
             folder_path = os.path.expanduser('~/Documents/photos')
             os.makedirs(folder_path, exist_ok=True)
             snapshot_path = os.path.join(folder_path, f"manual_{timestamp_str}.jpg")
             cv2.imwrite(snapshot_path, frame)
             
+            # Convertir a base64
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             image_base64 = base64.b64encode(buffer).decode('utf-8')
             
+            # Obtener parámetros
             prompt = data.get('prompt', 'What is in this picture?')
             model = data.get('model', 'llava:7b')
             
-            socketio.emit('analysis_status', {'status': 'Analizando imagen...', 'prompt': prompt})
+            socketio.emit('analysis_status', {'status': 'Analizando con API real...', 'prompt': prompt})
             
+            # *** LLAMADA REAL AL API ***
             response = send_to_llm(image_base64, prompt, model)
             
+            # Guardar en historial
             response_data = {
                 'id': len(responses_history) + 1,
                 'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S"),
@@ -249,8 +355,8 @@ def handle_capture_and_analyze(data):
                 'image_path': snapshot_path,
                 'auto_capture': False  # Captura manual
             }
-            responses_history.append(response_data)
             
+            responses_history.append(response_data)
             socketio.emit('new_response', response_data)
             socketio.emit('analysis_status', {'status': 'Análisis completado'})
             
@@ -258,6 +364,7 @@ def handle_capture_and_analyze(data):
             socketio.emit('analysis_error', {'error': f'Error en análisis: {str(e)}'})
     
     socketio.start_background_task(analyze_image)
+
 
 @socketio.on('clear_history')
 def handle_clear_history():
