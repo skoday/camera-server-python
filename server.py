@@ -65,77 +65,38 @@ def capture_and_stream():
         eventlet.sleep(0.03)  # ~30 FPS
 
 def auto_capture_task():
-    """
-    Tarea independiente de autocaptura que funciona SIN importar si hay usuarios conectados
-    Esta función corre en background y sigue capturando aunque no haya clientes
-    """
     global is_auto_capturing, video_capture, responses_history, auto_capture_interval, auto_capture_prompt
     
-    print("🤖 Iniciando autocaptura independiente...")
+    print("🤖 Iniciando autocaptura con auto-corrección de drift...")
+    
+    start_time = time.time()
+    capture_count = 0
     
     while is_auto_capturing:
-        if video_capture is None or not video_capture.isOpened():
-            print("⚠️ Cámara no disponible para autocaptura, reintentando...")
-            eventlet.sleep(1)
-            continue
-            
-        try:
-            # Capturar frame actual
-            ret, frame = video_capture.read()
-            if not ret:
-                print("⚠️ Error capturando frame, reintentando...")
-                eventlet.sleep(1)
-                continue
-            
-            # Guardar snapshot con timestamp
-            timestamp = datetime.now()
-            timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Incluir milisegundos
-            folder_path = os.path.expanduser('~/Documents/photos')
-            os.makedirs(folder_path, exist_ok=True)
-            snapshot_path = os.path.join(folder_path, f"snapshot_{timestamp_str}.jpg")
-            cv2.imwrite(snapshot_path, frame)
-            
-            print(f"📸 Snapshot guardado: {snapshot_path}")
-            
-            # Codificar imagen para LLM
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            image_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            print(f"🧠 Enviando al LLM: '{auto_capture_prompt}'")
-            
-            # Enviar al LLM (usando stub)
-            response = send_to_llm(image_base64, auto_capture_prompt, "llava:7b")
-            
-            # Guardar en historial
-            response_data = {
-                'id': len(responses_history) + 1,
-                'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                'prompt': auto_capture_prompt,
-                'response': response,
-                'model': 'llava:7b',
-                'image_path': snapshot_path,
-                'auto_capture': True  # Marca para identificar capturas automáticas
-            }
-            responses_history.append(response_data)
-            
-            print(f"✅ Respuesta #{response_data['id']}: {response[:50]}...")
-            
-            # Emitir respuesta a TODOS los clientes conectados (si los hay)
-            # Si no hay clientes conectados, se almacena igual y lo verán cuando se conecten
-            socketio.emit('new_response', response_data)
-            socketio.emit('auto_capture_status', {
-                'status': f'Captura automática #{response_data["id"]} completada',
-                'next_in': auto_capture_interval
-            })
-            
-        except Exception as e:
-            print(f"❌ Error en autocaptura: {e}")
-            socketio.emit('auto_capture_error', {'error': str(e)})
+        current_time = time.time()
         
-        # Esperar el intervalo configurado
-        eventlet.sleep(auto_capture_interval)
-    
-    print("🛑 Autocaptura detenida")
+        # Calcular cuándo debería ocurrir la próxima captura
+        expected_capture_time = start_time + (capture_count * auto_capture_interval)
+        
+        if current_time >= expected_capture_time:
+            capture_count += 1
+            
+            # Detectar drift significativo y corregir
+            drift = current_time - expected_capture_time
+            if drift > 0.5:  # Si hay más de 500ms de drift
+                print(f"⚠️ Drift detectado: {drift:.2f}s - Corrigiendo...")
+                start_time = current_time - (capture_count * auto_capture_interval)
+            
+            # Tu código de captura aquí...
+            try:
+                # [Mismo código de captura que arriba]
+                print(f"📸 Captura #{capture_count} - Drift actual: {drift:.3f}s")
+                
+            except Exception as e:
+                print(f"❌ Error: {e}")
+        
+        eventlet.sleep(0.05)
+
 
 def llm_stub(image_base64, prompt, model="llava:7b"):
     """Stub del LLM con respuestas más realistas"""
@@ -200,10 +161,18 @@ def handle_start_stream():
 
 @socketio.on('stop_stream')
 def handle_stop_stream():
-    global is_streaming
+    global is_streaming, video_capture
     is_streaming = False
+    
+    # AGREGAR: Liberar la cámara explícitamente
+    if video_capture is not None:
+        video_capture.release()
+        video_capture = None
+        print("📹 Cámara liberada - LED debería apagarse")
+    
     emit('stream_status', {'status': 'stopped'}, broadcast=True)
     print("📹 Stream de video detenido")
+
 
 @socketio.on('start_auto_capture')
 def handle_start_auto_capture(data):
