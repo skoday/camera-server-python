@@ -100,9 +100,7 @@
         const stopAutoBtn = document.getElementById('stopAutoBtn');
         const autoInterval = document.getElementById('autoInterval');
 
-        let autoCapture = null;
-
-        // Eventos de Socket.IO
+        // Eventos de Socket.IO - LIMPIADOS Y SIN DUPLICADOS
         socket.on('connect', () => {
             connectionStatus.textContent = 'Conectado';
             connectionStatus.className = 'status-connected';
@@ -152,56 +150,7 @@
             response.value = 'Error: ' + data.error;
         });
 
-        // Event listeners
-        startBtn.addEventListener('click', () => {
-            socket.emit('start_stream');
-        });
-
-        stopBtn.addEventListener('click', () => {
-            socket.emit('stop_stream');
-        });
-
-        captureBtn.addEventListener('click', () => {
-            const promptText = prompt.value.trim() || 'What is in this picture?';
-            socket.emit('capture_and_analyze', { prompt: promptText });
-        });
-
-        clearHistoryBtn.addEventListener('click', () => {
-            socket.emit('clear_history');
-        });
-
-        startAutoBtn.addEventListener('click', () => {
-            const interval = parseInt(autoInterval.value) * 1000;
-            autoCapture = setInterval(() => {
-                const promptText = prompt.value.trim() || 'What is in this picture?';
-                socket.emit('capture_and_analyze', { prompt: promptText });
-            }, interval);
-            
-            startAutoBtn.disabled = true;
-            stopAutoBtn.disabled = false;
-            autoInterval.disabled = true;
-        });
-
-        stopAutoBtn.addEventListener('click', () => {
-            if (autoCapture) {
-                clearInterval(autoCapture);
-                autoCapture = null;
-            }
-            
-            startAutoBtn.disabled = false;
-            stopAutoBtn.disabled = true;
-            autoInterval.disabled = false;
-        });
-
-        function addResponseToTable(data) {
-            const row = responsesTableBody.insertRow(0);
-            row.innerHTML = `
-                <td>${data.id}</td>
-                <td>${data.timestamp}</td>
-                <td>${data.prompt}</td>
-                <td>${data.response}</td>
-            `;
-        }
+        // Eventos de autocaptura del backend - SISTEMA LIMPIO
         socket.on('auto_capture_started', (data) => {
             startAutoBtn.disabled = true;
             stopAutoBtn.disabled = false;
@@ -228,15 +177,25 @@
             }
         });
 
-        socket.on('auto_capture_status', (data) => {
-            console.log('📊 Auto-captura:', data.status);
+        // Event listeners - SOLO SISTEMA BACKEND (SIN setInterval)
+        startBtn.addEventListener('click', () => {
+            socket.emit('start_stream');
         });
 
-        socket.on('auto_capture_error', (data) => {
-            console.error('❌ Error auto-captura:', data.error);
+        stopBtn.addEventListener('click', () => {
+            socket.emit('stop_stream');
         });
 
-        // Actualizar los event listeners existentes
+        captureBtn.addEventListener('click', () => {
+            const promptText = prompt.value.trim() || 'What is in this picture?';
+            socket.emit('capture_and_analyze', { prompt: promptText });
+        });
+
+        clearHistoryBtn.addEventListener('click', () => {
+            socket.emit('clear_history');
+        });
+
+        // AUTOCAPTURA - SOLO SISTEMA BACKEND (SIN setInterval local)
         startAutoBtn.addEventListener('click', () => {
             const interval = parseInt(autoInterval.value);
             const promptText = prompt.value.trim() || 'What is in this picture?';
@@ -250,6 +209,16 @@
             socket.emit('stop_auto_capture');
         });
 
+        // Función auxiliar
+        function addResponseToTable(data) {
+            const row = responsesTableBody.insertRow(0);
+            row.innerHTML = `
+                <td>${data.id}</td>
+                <td>${data.timestamp}</td>
+                <td>${data.prompt}</td>
+                <td>${data.response}</td>
+            `;
+        }
     </script>
 </body>
 </html>
